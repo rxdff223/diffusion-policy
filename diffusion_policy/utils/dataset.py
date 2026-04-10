@@ -75,9 +75,10 @@ class ActionNormalizer:
     """Normalizes actions from [min, max] to [-1, 1]."""
 
     def __init__(self, action_min, action_max):
-        self.action_min = action_min
-        self.action_max = action_max
-        self.action_range = action_max - action_min
+        # Store as numpy for consistent dtype with dataset output
+        self.action_min = np.array(action_min, dtype=np.float32)
+        self.action_max = np.array(action_max, dtype=np.float32)
+        self.action_range = self.action_max - self.action_min
 
     def normalize(self, actions):
         """Map [min, max] -> [-1, 1]"""
