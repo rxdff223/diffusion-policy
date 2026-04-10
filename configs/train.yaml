@@ -1,0 +1,26 @@
+# Diffusion Policy Training Config
+
+# Data
+data_dir: "preprocessed"
+action_chunk_size: 16
+obs_horizon: 2
+
+# Training
+batch_size: 32
+num_epochs: 100
+lr: 0.0001
+weight_decay: 0.0001
+save_every: 10
+
+# Model Architecture
+hidden_dim: 256
+time_emb_dim: 128
+num_blocks: 3
+dropout: 0.1
+
+# Diffusion
+num_timesteps: 100
+beta_schedule: "cosine"
+
+# Output
+output_dir: "results"
