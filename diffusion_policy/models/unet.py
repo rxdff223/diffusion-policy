@@ -31,7 +31,8 @@ class ResidualBlock(nn.Module):
         super().__init__()
         self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size=3, padding=1)
         self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size=3, padding=1)
-        self.group_norm1 = nn.GroupNorm(8, out_channels)
+        # GN norm is applied to the actual input channels
+        self.group_norm1 = nn.GroupNorm(8, in_channels)
         self.group_norm2 = nn.GroupNorm(8, out_channels)
         self.time_mlp = nn.Sequential(
             nn.SiLU(),
@@ -39,13 +40,14 @@ class ResidualBlock(nn.Module):
         )
         self.dropout = nn.Dropout(dropout)
 
-        # Skip connection projection if dimensions differ
-        self.skip_proj = nn.Conv1d(in_channels, out_channels, 1) if in_channels != out_channels else nn.Identity()
+        # Skip connection: project if dimensions differ
+        self.skip_proj = nn.Conv1d(in_channels, out_channels, 1) \
+            if in_channels != out_channels else nn.Identity()
 
     def forward(self, x, t_emb):
         h = self.group_norm1(x).relu()
         h = self.conv1(h)
-        h = h + self.time_mlp(self.time_mlp[0](t_emb))[:, :, None]  # add time bias
+        h = h + self.time_mlp(t_emb)[:, :, None]
 
         h = self.group_norm2(h).relu()
         h = self.dropout(h)
@@ -56,10 +58,10 @@ class ResidualBlock(nn.Module):
 class ConditionalUNet1D(nn.Module):
     """
     Conditional 1D U-Net for action denoising.
-    - obs: observation embedding
-    - noisy_action: noisy action sequence (T, action_dim)
-    - timestep: diffusion timestep
-    Returns: predicted noise
+    - noisy_action: noisy action sequence (B, action_chunk_size, action_dim)
+    - obs: observation conditioning (B, obs_horizon, obs_dim)
+    - timestep: diffusion timestep (B,)
+    Returns: predicted noise (B, action_chunk_size, action_dim)
     """
 
     def __init__(
@@ -84,41 +86,42 @@ class ConditionalUNet1D(nn.Module):
             nn.Linear(time_emb_dim * 2, time_emb_dim),
         )
 
-        # Observation encoder: (obs_horizon, obs_dim) -> (hidden_dim,)
+        # Observation encoder: mean-pool over history → hidden_dim
         self.obs_encoder = nn.Sequential(
             nn.Linear(obs_dim, hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim),
         )
 
-        # Input projection: action + time
+        # Project observation embedding to match time dim
+        self.obs_to_time = nn.Linear(hidden_dim, time_emb_dim)
+
+        # Input: (B, action_dim, T) — action is transposed for 1D conv
         self.action_in = nn.Conv1d(action_dim, hidden_dim, kernel_size=3, padding=1)
 
-        # Time embedding projection for input
-        self.time_in = nn.Linear(time_emb_dim, hidden_dim)
-
-        # Encoder blocks (down-sampling via stride)
-        self.encoder_blocks = nn.ModuleList()
+        # Build encoder: each block doubles channels, halves sequence length
+        self.encoder_convs = nn.ModuleList()
+        self.encoder_res = nn.ModuleList()
         ch = hidden_dim
         for i in range(num_blocks):
-            self.encoder_blocks.append(ResidualBlock(ch, ch * 2, time_emb_dim, dropout))
+            self.encoder_convs.append(nn.Conv1d(ch, ch * 2, kernel_size=3, stride=2, padding=1))
+            self.encoder_res.append(ResidualBlock(ch * 2, ch * 2, time_emb_dim, dropout))
             ch *= 2
 
         # Middle block
-        self.middle_block = ResidualBlock(ch, ch, time_emb_dim, dropout)
+        self.middle = ResidualBlock(ch, ch, time_emb_dim, dropout)
 
-        # Decoder blocks (up-sampling via transposed conv)
-        self.decoder_blocks = nn.ModuleList()
+        # Build decoder: each block halves channels, doubles sequence length
+        self.decoder_convs = nn.ModuleList()
+        self.decoder_res = nn.ModuleList()
         for i in range(num_blocks):
-            self.decoder_blocks.append(
-                nn.Sequential(
-                    nn.ConvTranspose1d(ch, ch // 2, kernel_size=4, stride=2, padding=1),
-                    ResidualBlock(ch // 2, ch // 2, time_emb_dim, dropout),
-                )
+            self.decoder_convs.append(
+                nn.ConvTranspose1d(ch, ch // 2, kernel_size=4, stride=2, padding=1)
             )
+            self.decoder_res.append(ResidualBlock(ch, ch // 2, time_emb_dim, dropout))
             ch //= 2
 
-        # Output projection
+        # Output: predict noise
         self.out = nn.Sequential(
             nn.GroupNorm(8, hidden_dim),
             nn.SiLU(),
@@ -129,8 +132,8 @@ class ConditionalUNet1D(nn.Module):
         """
         Args:
             noisy_action: (B, action_chunk_size, action_dim)
-            obs: (B, obs_horizon, obs_dim) — observation history
-            timestep: (B,) — diffusion timestep (0 = clean, T = max noise)
+            obs: (B, obs_horizon, obs_dim)
+            timestep: (B,)
         Returns:
             noise_pred: (B, action_chunk_size, action_dim)
         """
@@ -139,33 +142,35 @@ class ConditionalUNet1D(nn.Module):
         # Timestep embedding
         t_emb = self.time_mlp(timestep)  # (B, time_emb_dim)
 
-        # Encode observation: mean pool over history -> (B, obs_dim) -> (B, hidden_dim)
+        # Encode observation: (B, obs_horizon, obs_dim) → mean → (B, hidden_dim)
         obs_emb = self.obs_encoder(obs).mean(dim=1)  # (B, hidden_dim)
-        obs_emb = obs_emb + self.time_in(t_emb)       # (B, hidden_dim)
+        obs_t_emb = self.obs_to_time(obs_emb)        # (B, time_emb_dim)
+        t_emb = t_emb + obs_t_emb                     # combine time + obs conditioning
 
         # Transpose action for 1D conv: (B, action_dim, T)
-        x = noisy_action.transpose(1, 2)  # (B, action_dim, T)
+        x = noisy_action.transpose(1, 2)
 
         # Project to hidden dim
-        x = self.action_in(x)            # (B, hidden_dim, T)
-        x = x + obs_emb[:, :, None]       # add observation conditioning
+        x = self.action_in(x)  # (B, hidden_dim, T)
 
-        # Encoder
+        # Encoder: down-sample + residual
         skips = []
-        for block in self.encoder_blocks:
-            x = block(x, t_emb)
-            skips.append(x)
-        skips = skips[::-1]  # reverse for decoder
+        for conv, res in zip(self.encoder_convs, self.encoder_res):
+            skips.append(x)            # store BEFORE downsample (matches upsampled length)
+            x = conv(x)               # downsample, double channels
+            x = res(x, t_emb)         # residual block
 
         # Middle
-        x = self.middle_block(x, t_emb)
+        x = self.middle(x, t_emb)
 
-        # Decoder with skip connections
-        for i, block in enumerate(self.decoder_blocks):
-            x = block[0](x)  # upsample
-            x = torch.cat([x, skips[i]], dim=1)  # skip connection
-            x = block[1](x, t_emb)  # residual block
+        # Decoder: up-sample + concatenate skip + residual
+        for conv, res, skip_ch in zip(
+            self.decoder_convs, self.decoder_res, reversed(skips)
+        ):
+            x = conv(x)                   # upsample, half channels → ch//2
+            x = torch.cat([x, skip_ch], dim=1)  # concat → ch channels
+            x = res(x, t_emb)             # residual: ch → ch//2
 
-        # Output: (B, action_dim, T) -> (B, action_chunk_size, action_dim)
+        # Output: (B, action_dim, T) → (B, action_chunk_size, action_dim)
         noise_pred = self.out(x).transpose(1, 2)
         return noise_pred

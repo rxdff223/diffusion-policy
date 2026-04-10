@@ -79,12 +79,14 @@ class DiffusionProcess(nn.Module):
         Returns the parameters of the reverse Gaussian.
         """
         noise_pred = self.noise_predictor(x_t, obs, timesteps)
-        x_recon = (x_t - self.sqrt_one_minus_alphas_cumprod[timesteps][:, None, None] * noise_pred) \
-                  / self.sqrt_alphas_cumprod[timesteps][:, None, None].clamp(min=1e-8)
+        sqrt_alpha_bar = self.sqrt_alphas_cumprod[timesteps][:, None, None]
+        sqrt_one_minus  = self.sqrt_one_minus_alphas_cumprod[timesteps][:, None, None]
+        alpha_bar_prev  = self.alphas_cumprod_prev[timesteps][:, None, None]
+        beta_t          = self.betas[timesteps][:, None, None]
 
-        model_mean = self.alphas_cumprod_prev[timesteps][:, None, None].sqrt() * x_recon + \
-                     self.betas[timesteps][:, None, None].sqrt() * noise_pred
-        model_var = self.betas[timesteps]
+        x_recon = (x_t - sqrt_one_minus * noise_pred) / sqrt_alpha_bar.clamp(min=1e-8)
+        model_mean = alpha_bar_prev.sqrt() * x_recon + beta_t.sqrt() * noise_pred
+        model_var   = beta_t
         return model_mean, model_var, noise_pred
 
     @torch.no_grad()
@@ -104,9 +106,9 @@ class DiffusionProcess(nn.Module):
         if sampling_strategy == "ddpm":
             # Standard DDPM sampling
             noise_pred = self.noise_predictor(x_t, obs, timesteps)
-            alpha_t = self.alphas[timesteps]
-            alpha_bar_t = self.alphas_cumprod[timesteps]
-            beta_t = self.betas[timesteps]
+            alpha_t    = self.alphas[timesteps][:, None, None]          # (B, 1, 1)
+            alpha_bar_t = self.alphas_cumprod[timesteps][:, None, None]
+            beta_t     = self.betas[timesteps][:, None, None]
 
             # Predicted clean action
             x_recon = (x_t - torch.sqrt(1 - alpha_bar_t) * noise_pred) / torch.sqrt(alpha_bar_t).clamp(min=1e-8)
@@ -125,15 +127,13 @@ class DiffusionProcess(nn.Module):
         elif sampling_strategy == "ddim":
             # DDIM sampling (deterministic or partial stochastic)
             noise_pred = self.noise_predictor(x_t, obs, timesteps)
-            alpha_bar_t = self.alphas_cumprod[timesteps]
+            alpha_bar_t    = self.alphas_cumprod[timesteps][:, None, None]
             x_recon = (x_t - torch.sqrt(1 - alpha_bar_t) * noise_pred) / torch.sqrt(alpha_bar_t).clamp(min=1e-8)
 
             # DDIM "eta=0" gives deterministic reverse
-            eta = 0.0
-            alpha_bar_prev = self.alphas_cumprod_prev[timesteps]
-            pred_x0 = x_recon
+            alpha_bar_prev = self.alphas_cumprod_prev[timesteps][:, None, None]
             dir_xt = torch.sqrt(1 - alpha_bar_prev) * noise_pred
-            x_prev = torch.sqrt(alpha_bar_prev) * pred_x0 + dir_xt
+            x_prev = torch.sqrt(alpha_bar_prev) * x_recon + dir_xt
 
         else:
             raise ValueError(f"Unknown sampling strategy: {sampling_strategy}")
