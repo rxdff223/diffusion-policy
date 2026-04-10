@@ -86,15 +86,21 @@ class ConditionalUNet1D(nn.Module):
             nn.Linear(time_emb_dim * 2, time_emb_dim),
         )
 
-        # Observation encoder: mean-pool over history → hidden_dim
-        self.obs_encoder = nn.Sequential(
+        # Observation encoder: per-frame embedding + bidirectional LSTM → hidden_dim
+        self.obs_embed = nn.Sequential(
             nn.Linear(obs_dim, hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim),
         )
-
-        # Project observation embedding to match time dim
-        self.obs_to_time = nn.Linear(hidden_dim, time_emb_dim)
+        self.obs_lstm = nn.LSTM(
+            input_size=hidden_dim,
+            hidden_size=hidden_dim,
+            num_layers=1,
+            batch_first=True,
+            bidirectional=True,
+        )
+        self.obs_proj = nn.Linear(hidden_dim * 2, hidden_dim)  # bidirectional → hidden_dim
+        self.obs_to_time = nn.Linear(hidden_dim, time_emb_dim)    # hidden_dim → time_emb_dim
 
         # Input: (B, action_dim, T) — action is transposed for 1D conv
         self.action_in = nn.Conv1d(action_dim, hidden_dim, kernel_size=3, padding=1)
@@ -142,10 +148,15 @@ class ConditionalUNet1D(nn.Module):
         # Timestep embedding
         t_emb = self.time_mlp(timestep)  # (B, time_emb_dim)
 
-        # Encode observation: (B, obs_horizon, obs_dim) → mean → (B, hidden_dim)
-        obs_emb = self.obs_encoder(obs).mean(dim=1)  # (B, hidden_dim)
+        # Encode observation: (B, obs_horizon, obs_dim)
+        # 1) per-frame embedding
+        obs_emb = self.obs_embed(obs)                # (B, obs_horizon, hidden_dim)
+        # 2) bidirectional LSTM → final hidden state
+        _, (h_n, _) = self.obs_lstm(obs_emb)        # h_n: (2, B, hidden_dim)
+        obs_emb = torch.cat([h_n[0], h_n[1]], dim=-1)  # (B, hidden_dim*2), forward+backward
+        obs_emb = self.obs_proj(obs_emb)             # (B, hidden_dim)
         obs_t_emb = self.obs_to_time(obs_emb)        # (B, time_emb_dim)
-        t_emb = t_emb + obs_t_emb                     # combine time + obs conditioning
+        t_emb = t_emb + obs_t_emb                   # combine time + obs conditioning
 
         # Transpose action for 1D conv: (B, action_dim, T)
         x = noisy_action.transpose(1, 2)

@@ -107,6 +107,8 @@ def train(args):
         "model_state": policy.state_dict(),
         "normalizer_min": normalizer.action_min,
         "normalizer_max": normalizer.action_max,
+        "obs_dim": obs_dim,
+        "action_dim": action_dim,
         "args": vars(args),
     }, final_path)
     print(f"Final model saved: {final_path}")

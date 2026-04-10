@@ -27,6 +27,8 @@ from diffusion_policy.utils.dataset import RobotDataset
 def load_diffusion_policy(checkpoint_path, device="cuda"):
     ckpt = torch.load(checkpoint_path, map_location=device)
     args = ckpt.get("args", {})
+    args.setdefault("obs_dim", ckpt.get("obs_dim", 1024))
+    args.setdefault("action_dim", ckpt.get("action_dim", 16))
     normalizer_min = torch.tensor(ckpt["normalizer_min"], dtype=torch.float32)
     normalizer_max = torch.tensor(ckpt["normalizer_max"], dtype=torch.float32)
 

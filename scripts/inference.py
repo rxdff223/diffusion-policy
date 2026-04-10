@@ -52,7 +52,11 @@ def inference_demo(policy, normalizer, data_dir, num_samples=5,
     """
     Run inference on random samples from the dataset and print results.
     """
-    dataset = RobotDataset(data_dir)
+    dataset = RobotDataset(
+        data_dir,
+        action_chunk_size=args.get("action_chunk_size", 16),
+        obs_horizon=args.get("obs_horizon", 2),
+    )
 
     for i in range(num_samples):
         idx = np.random.randint(0, len(dataset))
