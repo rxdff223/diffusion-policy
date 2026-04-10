@@ -62,7 +62,7 @@ def plot_trajectory_comparison(checkpoint_path, data_dir, num_samples=5,
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Load policy
-    ckpt = torch.load(checkpoint_path, map_location=device)
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     args = ckpt.get("args", {})
     normalizer_min = torch.tensor(ckpt["normalizer_min"], dtype=torch.float32)
     normalizer_max = torch.tensor(ckpt["normalizer_max"], dtype=torch.float32)
@@ -169,7 +169,7 @@ def plot_action_heatmap(checkpoint_path, data_dir, num_samples=3,
     os.makedirs(save_dir, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    ckpt = torch.load(checkpoint_path, map_location=device)
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     args = ckpt.get("args", {})
     normalizer_min = torch.tensor(ckpt["normalizer_min"], dtype=torch.float32)
     normalizer_max = torch.tensor(ckpt["normalizer_max"], dtype=torch.float32)

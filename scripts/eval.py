@@ -25,7 +25,7 @@ from diffusion_policy.utils.dataset import RobotDataset
 
 
 def load_diffusion_policy(checkpoint_path, device="cuda"):
-    ckpt = torch.load(checkpoint_path, map_location=device)
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     args = ckpt.get("args", {})
     args.setdefault("obs_dim", ckpt.get("obs_dim", 1024))
     args.setdefault("action_dim", ckpt.get("action_dim", 16))
@@ -58,7 +58,7 @@ def load_diffusion_policy(checkpoint_path, device="cuda"):
 def load_bc_policy(obs_dim, action_dim, obs_horizon, checkpoint_path=None, device="cuda"):
     policy = BCPolicy(obs_dim, action_dim, hidden_dim=256, obs_horizon=obs_horizon).to(device)
     if checkpoint_path and os.path.exists(checkpoint_path):
-        ckpt = torch.load(checkpoint_path, map_location=device)
+        ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
         policy.load_state_dict(ckpt["model_state"])
     policy.eval()
     return policy

@@ -12,7 +12,7 @@ from diffusion_policy.utils.dataset import RobotDataset
 
 
 def load_policy(checkpoint_path, device="cuda"):
-    ckpt = torch.load(checkpoint_path, map_location=device)
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
     # Rebuild model with saved args
     args = ckpt.get("args", {})
