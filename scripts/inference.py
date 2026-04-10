@@ -14,7 +14,6 @@ from diffusion_policy.utils.dataset import RobotDataset
 def load_policy(checkpoint_path, device="cuda"):
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
-    # Rebuild model with saved args
     args = ckpt.get("args", {})
     normalizer_min = ckpt["normalizer_min"]
     normalizer_max = ckpt["normalizer_max"]
@@ -36,27 +35,27 @@ def load_policy(checkpoint_path, device="cuda"):
     policy.load_state_dict(ckpt["model_state"])
     policy.eval()
 
-    # Normalizer for denormalization
     from diffusion_policy.utils.dataset import ActionNormalizer
     normalizer = ActionNormalizer(
         torch.tensor(normalizer_min, dtype=torch.float32),
         torch.tensor(normalizer_max, dtype=torch.float32),
     )
 
-    return policy, normalizer
+    # Return dataset params so caller can use them
+    dataset_kwargs = {
+        "action_chunk_size": args.get("action_chunk_size", 16),
+        "obs_horizon": args.get("obs_horizon", 2),
+    }
+    return policy, normalizer, dataset_kwargs
 
 
 @torch.no_grad()
-def inference_demo(policy, normalizer, data_dir, num_samples=5,
-                    sampling_strategy="ddpm", num_steps=None):
+def inference_demo(policy, normalizer, data_dir, dataset_kwargs,
+                  num_samples=5, sampling_strategy="ddpm", num_steps=None):
     """
     Run inference on random samples from the dataset and print results.
     """
-    dataset = RobotDataset(
-        data_dir,
-        action_chunk_size=args.get("action_chunk_size", 16),
-        obs_horizon=args.get("obs_horizon", 2),
-    )
+    dataset = RobotDataset(data_dir, **dataset_kwargs)
 
     for i in range(num_samples):
         idx = np.random.randint(0, len(dataset))
@@ -65,11 +64,9 @@ def inference_demo(policy, normalizer, data_dir, num_samples=5,
         obs = sample["obs_history"].unsqueeze(0).to(policy.device)
         gt_action_norm = sample["action_chunk"]
 
-        # Sample action from policy
         action_norm = policy.sample_actions(obs, sampling_strategy, num_steps)
         action_norm = action_norm[0].cpu().numpy()
 
-        # Denormalize
         gt_action = normalizer.denormalize(gt_action_norm.numpy())
         pred_action = normalizer.denormalize(action_norm)
 
@@ -96,10 +93,10 @@ def main():
     if args.strategy == "ddim":
         print(f"DDIM steps: {args.num_steps}")
 
-    policy, normalizer = load_policy(args.checkpoint, device)
+    policy, normalizer, dataset_kwargs = load_policy(args.checkpoint, device)
     print("Policy loaded successfully.")
 
-    inference_demo(policy, normalizer, args.data_dir,
+    inference_demo(policy, normalizer, args.data_dir, dataset_kwargs,
                    num_samples=args.num_samples,
                    sampling_strategy=args.strategy,
                    num_steps=args.num_steps)
